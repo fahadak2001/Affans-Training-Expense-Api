@@ -9,11 +9,13 @@ using System.Text;
 
 
 
+
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddMvc();
-//builder.Services.AddControllersWithViews(); /////////////////
+
 
 // Configure SQL Server
 builder.Services.AddDbContext<ExpenseBackendDBContext>(options =>
@@ -29,8 +31,11 @@ builder.Services.AddDistributedSqlServerCache(options =>
 
 
 
-builder.Services.AddScoped<IExpenseService, ExpenseService>();
 builder.Services.AddScoped<IExpenseRepository, ExpenseRepository>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IExpenseService, ExpenseService>();
+builder.Services.Decorate<IExpenseService, CachedExpenseService>();
+
 
 
 builder.Services.AddEndpointsApiExplorer();

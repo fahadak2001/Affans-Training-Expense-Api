@@ -25,6 +25,8 @@ namespace ExpenseBackend.Repositories
 
         public IEnumerable<Expense> GetAll(string userName)
         {
+            // Here I am using a stored procedure to get the expenses by username.
+            // The username that I retrieved from the JWT token.
             return _dbContext.Expense.FromSqlRaw("EXEC GetExpensesByUsername @UserName={0}", userName).ToList();
         }
   

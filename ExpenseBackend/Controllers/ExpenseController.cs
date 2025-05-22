@@ -1,8 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Caching.Distributed;
-using System.Text;
-using System.Text.Json;
 using ExpenseBackend.Models;
 using ExpenseBackend.Services;
 
@@ -11,49 +8,46 @@ namespace ExpenseBackend.Controllers;
 [ApiController]
 [Route("api/expenses")]
 [Produces("application/json")]
-[Authorize]
+[Authorize]  //This attribute ensures that the controller requires authentication.
+             //and if the JWT token that is passed is valid or expired or not.
+             //matching the JWT token secret key, issuer and expiration time. from appsettings.json.
+             //I didnt make a method for Authorization, because the JWT token is
+             //already validated in the middleware. just by using this attribute.
 public class ExpenseController : ControllerBase
 {
     private readonly IExpenseService _expenseService;
-    private readonly IDistributedCache _distributedCache;
+    private readonly IAuthService _authService;
 
-    public ExpenseController(IExpenseService expenseService, IDistributedCache distributedCache)
+    public ExpenseController(IExpenseService expenseService, IAuthService authService)
     {
         _expenseService = expenseService;
-        _distributedCache = distributedCache;
+        _authService = authService;
     }
 
     [HttpGet("List")]
-    public async Task<ActionResult<IEnumerable<Expense>>> GetExpenses()
+    public ActionResult<IEnumerable<Expense>> GetExpenses()
     {
-        var username = User.Identity?.Name;
+        var username = User.Identity?.Name; // Here we get the username from the JWT token.
+                                            // In the JWT token I have added claims,
+                                            // NameIdentifier as username.
+                                            // Name as email and Role as role.
+                                            // I am making the JWT token in user service in LoginAPI.
+                                            // So i have to get this data of user to seperate expense data
+                                            // for each user. and only send the data for this user to the frontend.
 
-        if (string.IsNullOrEmpty(username))
+        if (_authService.Authenticate(username) )// Here I am only checking if the username is null or not.
+                                                 // because if it is, then i cannot get the expenses. 
+                                                 // Auth is still being done in the middleware by verifying JWT token.
+                                                 // That is only created after Authentication in LoinAPI.
         {
-            return Unauthorized();
+            IEnumerable<Expense> expenses = _expenseService.GetAllExpenses(username);
+
+            return Ok(expenses.ToList());
+            
         }
 
-        string cacheKey = $"expenses:{username}";
-        byte[]? cachedExpensesBytes = await _distributedCache.GetAsync(cacheKey);
-
-        if (cachedExpensesBytes != null)
-        {
-            var cachedExpenses = JsonSerializer.Deserialize<List<Expense>>(Encoding.UTF8.GetString(cachedExpensesBytes));
-            return Ok(cachedExpenses);
-        }
-
-        IEnumerable<Expense> expenses = _expenseService.GetAllExpenses(username);
-
-        var options = new DistributedCacheEntryOptions()
-            .SetSlidingExpiration(TimeSpan.FromMinutes(5));
-
-        var expensesJson = JsonSerializer.Serialize(expenses.ToList());
-        var expensesBytes = Encoding.UTF8.GetBytes(expensesJson);
-        await _distributedCache.SetAsync(cacheKey, expensesBytes, options);
-
-        return Ok(expenses.ToList());
+        return Unauthorized();
     }
-
 
     [HttpPost("Create")]
     public ActionResult<Expense> CreateExpense([FromBody] Expense expense)
@@ -64,35 +58,32 @@ public class ExpenseController : ControllerBase
         }
 
         var username = User.Identity?.Name;
-        if (string.IsNullOrEmpty(username))
+        if (_authService.Authenticate(username))
         {
-            return Unauthorized();
+            expense.UserName = username;
+
+            _expenseService.CreateExpense(expense);
+
+            return CreatedAtAction(nameof(GetExpenseById), new { id = expense.Id }, expense);
         }
-        expense.UserName = username;
-
-        _expenseService.CreateExpense(expense);
-
-        string cacheKey = $"expenses:{username}";
-        _distributedCache.RemoveAsync(cacheKey);
-        
-        return CreatedAtAction(nameof(GetExpenseById), new { id = expense.Id }, expense);
+        return Unauthorized();
     }
 
     [HttpGet("{id}")]
     public ActionResult<Expense> GetExpenseById(int id)
     {
         var username = User.Identity?.Name;
-        if (string.IsNullOrEmpty(username))
+        if (_authService.Authenticate(username))
         {
-            return Unauthorized();
+            var expense = _expenseService.GetExpenseById(id);
+            if (expense == null || expense.UserName != username)
+            {
+                return NotFound();
+            }
+            return Ok(expense);
         }
+        return Unauthorized();
 
-        var expense = _expenseService.GetExpenseById(id);
-        if (expense == null || expense.UserName != username)
-        {
-            return NotFound();
-        }
-        return Ok(expense);
     }
 
     [HttpPut("Update")]
@@ -104,48 +95,37 @@ public class ExpenseController : ControllerBase
         }
 
         var username = User.Identity?.Name;
-        if (string.IsNullOrEmpty(username))
+        if (_authService.Authenticate(username))
         {
-            return Unauthorized();
+            var existingExpense = _expenseService.GetExpenseById(expense.Id);
+            if (existingExpense == null || existingExpense.UserName != username)
+            {
+                return NotFound();
+            }
+
+            existingExpense.Value = expense.Value;
+            existingExpense.Description = expense.Description;
+
+            _expenseService.UpdateExpense(existingExpense);
+
+            return Ok(existingExpense);
+            
         }
+        return Unauthorized();
 
-        var existingExpense = _expenseService.GetExpenseById(expense.Id);
-        if (existingExpense == null || existingExpense.UserName != username)
-        {
-            return NotFound();
-        }
-
-        existingExpense.Value = expense.Value;
-        existingExpense.Description = expense.Description;
-
-        _expenseService.UpdateExpense(existingExpense);
-
-        string cacheKey = $"expenses:{username}";
-        _distributedCache.RemoveAsync(cacheKey);
-        
-        return Ok(existingExpense);
     }
 
     [HttpDelete("Delete/{id}")]
     public IActionResult DeleteExpense(int id)
     {
         var username = User.Identity?.Name;
-        if (string.IsNullOrEmpty(username))
+        if (_authService.Authenticate(username))
         {
-            return Unauthorized();
+            _expenseService.DeleteExpense(id);
+
+            return NoContent();
         }
+        return Unauthorized();
 
-        var expenseToDelete = _expenseService.GetExpenseById(id);
-        if (expenseToDelete == null || expenseToDelete.UserName != username)
-        {
-            return NotFound();
-        }
-
-        _expenseService.DeleteExpense(id);
-
-        string cacheKey = $"expenses:{username}";
-        _distributedCache.RemoveAsync(cacheKey);
-        
-        return NoContent();
     }
 }
